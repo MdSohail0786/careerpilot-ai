@@ -2,12 +2,11 @@
  * OpenAI Service
  * Handles all AI-powered interview interactions
  */
+const OpenAI = require("openai");
 
-const OpenAI = require('openai');
-
-// Initialize OpenAI client
 const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
+  apiKey: process.env.GROQ_API_KEY,
+  baseURL: "https://api.groq.com/openai/v1",
 });
 
 /**
@@ -17,24 +16,31 @@ const openai = new OpenAI({
  * @returns {string} A single interview question
  */
 const generateQuestion = async (role, previousQuestions = []) => {
-  const previousQuestionsText = previousQuestions.length > 0
-    ? `\n\nPrevious questions asked (do NOT repeat these):\n${previousQuestions.map((q, i) => `${i + 1}. ${q}`).join('\n')}`
-    : '';
+  const previousQuestionsText =
+    previousQuestions.length > 0
+      ? `\n\nPrevious questions asked (do NOT repeat these):\n${previousQuestions
+          .slice(-5)
+          .map((q, i) => `${i + 1}. ${q}`)
+          .join("\n")}`
+      : "";
 
   const prompt = `Act as a senior technical interviewer conducting a real interview for a ${role} position. 
 Generate ONE clear, specific interview question that tests practical knowledge and problem-solving ability.
-The question should be realistic and commonly asked in actual technical interviews.
-Focus on: core concepts, practical application, problem-solving, or scenario-based questions.
-Return ONLY the question text, nothing else - no numbering, no explanations, no quotation marks.${previousQuestionsText}`;
+Return ONLY the question text.${previousQuestionsText}`;
 
-  const response = await openai.chat.completions.create({
-    model: 'gpt-3.5-turbo',
-    messages: [{ role: 'user', content: prompt }],
-    max_tokens: 150,
-    temperature: 0.8,
-  });
+  try {
+    const response = await openai.chat.completions.create({
+      model: "llama-3.3-70b-versatile",
+      messages: [{ role: "user", content: prompt }],
+      max_tokens: 150,
+      temperature: 0.8,
+    });
 
-  return response.choices[0].message.content.trim();
+    return response.choices[0].message.content.trim();
+  } catch (error) {
+    console.error("generateQuestion error:", error.message);
+    return "Unable to generate question right now.";
+  }
 };
 
 /**
@@ -44,31 +50,30 @@ Return ONLY the question text, nothing else - no numbering, no explanations, no 
  * @param {string} previousAnswer - The candidate's answer
  * @returns {string} A follow-up question
  */
-const generateFollowUpQuestion = async (role, previousQuestion, previousAnswer) => {
-  const prompt = `Act as a senior technical interviewer for a ${role} position.
+const generateFollowUpQuestion = async (
+  role,
+  previousQuestion,
+  previousAnswer,
+) => {
+  const prompt = `Act as interviewer for ${role}.
+Question: ${previousQuestion}
+Answer: ${previousAnswer}
+Generate ONE follow-up question.`;
 
-The candidate was asked: "${previousQuestion}"
+  try {
+    const response = await openai.chat.completions.create({
+      model: "llama-3.3-70b-versatile",
+      messages: [{ role: "user", content: prompt }],
+      max_tokens: 150,
+      temperature: 0.7,
+    });
 
-Their answer was: "${previousAnswer}"
-
-Generate ONE contextual follow-up question that:
-1. Digs deeper into their answer or a concept they mentioned
-2. Clarifies something vague they said, OR
-3. Challenges them to think more deeply about the topic
-4. Feels natural in a real interview conversation
-
-Return ONLY the follow-up question, nothing else.`;
-
-  const response = await openai.chat.completions.create({
-    model: 'gpt-3.5-turbo',
-    messages: [{ role: 'user', content: prompt }],
-    max_tokens: 150,
-    temperature: 0.7,
-  });
-
-  return response.choices[0].message.content.trim();
+    return response.choices[0].message.content.trim();
+  } catch (error) {
+    console.error("OpenAI Error (followUp):", error.message);
+    return "Unable to generate follow-up question.";
+  }
 };
-
 /**
  * Evaluate a candidate's answer to an interview question
  * @param {string} role - The job role
@@ -77,70 +82,61 @@ Return ONLY the follow-up question, nothing else.`;
  * @returns {object} Structured evaluation with scores and feedback
  */
 const evaluateAnswer = async (role, question, answer) => {
-  // Handle empty or very short answers
-  if (!answer || answer.trim().length < 5) {
-    return {
-      score: 0,
-      grammar_feedback: 'No answer was provided.',
-      technical_feedback: 'No answer was provided to evaluate.',
-      confidence_feedback: 'Unable to assess confidence without an answer.',
-      strengths: [],
-      weaknesses: ['No answer provided'],
-      suggestions: ['Please provide a detailed answer to receive proper feedback.'],
-    };
-  }
-
-  const prompt = `You are an expert technical interviewer evaluating a candidate for a ${role} position.
+  const prompt = `You are evaluating a ${role} candidate.
 
 Question: "${question}"
+Answer: "${answer}"
 
-Candidate's Answer: "${answer}"
-
-Evaluate this answer objectively and return ONLY a valid JSON object with this exact structure:
+Return ONLY JSON:
 {
-  "score": <number 0-100 representing overall quality>,
-  "grammar_feedback": "<2-3 sentences about grammar, clarity, and communication style>",
-  "technical_feedback": "<3-4 sentences about technical accuracy, depth, and correctness>",
-  "confidence_feedback": "<2-3 sentences about confidence, structure, and delivery>",
-  "strengths": ["<strength 1>", "<strength 2>", "<strength 3>"],
-  "weaknesses": ["<weakness 1>", "<weakness 2>"],
-  "suggestions": ["<actionable suggestion 1>", "<actionable suggestion 2>", "<actionable suggestion 3>"]
-}
+  "score": 0-100,
+  "grammar_feedback": "",
+  "technical_feedback": "",
+  "confidence_feedback": "",
+  "strengths": [],
+  "weaknesses": [],
+  "suggestions": []
+}`;
 
-Scoring guide:
-- 90-100: Exceptional, comprehensive, demonstrates expert-level knowledge
-- 70-89: Good, covers key concepts with minor gaps
-- 50-69: Adequate, shows basic understanding but lacks depth
-- 30-49: Partial, significant gaps or inaccuracies
-- 0-29: Poor, fundamentally incorrect or incomplete
-
-Return ONLY the JSON, no other text.`;
-
-  const response = await openai.chat.completions.create({
-    model: 'gpt-3.5-turbo',
-    messages: [{ role: 'user', content: prompt }],
-    max_tokens: 600,
-    temperature: 0.3, // Lower temperature for more consistent evaluation
-  });
-
-  const content = response.choices[0].message.content.trim();
-
-  // Parse JSON response safely
   try {
-    // Remove potential markdown code fences
-    const cleanContent = content.replace(/```json|```/g, '').trim();
-    return JSON.parse(cleanContent);
-  } catch (parseError) {
-    console.error('Failed to parse OpenAI evaluation response:', content);
-    // Return a safe fallback
+    const response = await openai.chat.completions.create({
+      model: "llama-3.3-70b-versatile",
+      messages: [{ role: "user", content: prompt }],
+      max_tokens: 600,
+      temperature: 0.3,
+    });
+
+    const content = response.choices[0].message.content.trim();
+    //const content = response.choices[0].message.content.trim();
+
+    const cleanContent = content.replace(/```json|```/g, "").trim();
+
+    try {
+      return JSON.parse(cleanContent);
+    } catch (parseError) {
+      console.error("JSON Parse Error:", cleanContent);
+
+      return {
+        score: 50,
+        grammar_feedback: "Parsing error",
+        technical_feedback: "Parsing error",
+        confidence_feedback: "Parsing error",
+        strengths: [],
+        weaknesses: ["Invalid AI response"],
+        suggestions: ["Try again"],
+      };
+    }
+  } catch (error) {
+    console.error("evaluateAnswer error:", error.message);
+
     return {
       score: 50,
-      grammar_feedback: 'Evaluation parsing error. Please try again.',
-      technical_feedback: 'Evaluation parsing error. Please try again.',
-      confidence_feedback: 'Evaluation parsing error. Please try again.',
-      strengths: ['Answer was provided'],
-      weaknesses: ['Could not fully evaluate'],
-      suggestions: ['Please try submitting your answer again.'],
+      grammar_feedback: "Evaluation failed",
+      technical_feedback: "Evaluation failed",
+      confidence_feedback: "Evaluation failed",
+      strengths: [],
+      weaknesses: ["AI error"],
+      suggestions: ["Try again"],
     };
   }
 };
@@ -152,8 +148,9 @@ Return ONLY the JSON, no other text.`;
  * @returns {object} Comprehensive report with aggregate scores and feedback
  */
 const generateFinalReport = async (role, questionAnswers) => {
-  // Calculate aggregate scores from individual evaluations
-  const validEvaluations = questionAnswers.filter(qa => qa.evaluation && qa.evaluation.score > 0);
+  const validEvaluations = questionAnswers.filter(
+    (qa) => qa.evaluation && qa.evaluation.score > 0,
+  );
 
   if (validEvaluations.length === 0) {
     return {
@@ -162,17 +159,16 @@ const generateFinalReport = async (role, questionAnswers) => {
       grammarScore: 0,
       confidenceScore: 0,
       strengths: [],
-      weaknesses: ['No answers were provided'],
-      suggestions: ['Complete the interview questions to receive a report'],
+      weaknesses: ["No answers were provided"],
+      suggestions: ["Complete the interview questions to receive a report"],
     };
   }
 
-  // Compute averages from individual scores
   const avgScore = Math.round(
-    validEvaluations.reduce((sum, qa) => sum + (qa.evaluation.score || 0), 0) / validEvaluations.length
+    validEvaluations.reduce((sum, qa) => sum + (qa.evaluation.score || 0), 0) /
+      validEvaluations.length,
   );
 
-  // Build a summary prompt for qualitative report generation
   const summaryData = validEvaluations.map((qa, i) => ({
     q: i + 1,
     score: qa.evaluation.score,
@@ -182,53 +178,52 @@ const generateFinalReport = async (role, questionAnswers) => {
 
   const prompt = `You are a senior technical interviewer summarizing a complete mock interview for a ${role} position.
 
-Interview Summary (${validEvaluations.length} questions answered):
+Interview Summary:
 ${JSON.stringify(summaryData, null, 2)}
 
 Overall average score: ${avgScore}/100
 
-Generate a comprehensive interview report. Return ONLY valid JSON:
+Return ONLY valid JSON:
 {
-  "technicalScore": <0-100, weighted average of technical performance>,
-  "grammarScore": <0-100, weighted average of communication quality>,
-  "confidenceScore": <0-100, estimate based on answer clarity and structure>,
-  "strengths": ["<top strength 1>", "<top strength 2>", "<top strength 3>", "<top strength 4>"],
-  "weaknesses": ["<main weakness 1>", "<main weakness 2>", "<main weakness 3>"],
-  "suggestions": ["<specific actionable suggestion 1>", "<specific actionable suggestion 2>", "<specific actionable suggestion 3>", "<specific actionable suggestion 4>"]
-}
-
-Return ONLY the JSON, no other text.`;
-
-  const response = await openai.chat.completions.create({
-    model: 'gpt-3.5-turbo',
-    messages: [{ role: 'user', content: prompt }],
-    max_tokens: 500,
-    temperature: 0.4,
-  });
-
-  const content = response.choices[0].message.content.trim();
+  "technicalScore": <0-100>,
+  "grammarScore": <0-100>,
+  "confidenceScore": <0-100>,
+  "strengths": ["..."],
+  "weaknesses": ["..."],
+  "suggestions": ["..."]
+}`;
 
   try {
-    const cleanContent = content.replace(/```json|```/g, '').trim();
+    const response = await openai.chat.completions.create({
+      model: "llama-3.3-70b-versatile",
+      messages: [{ role: "user", content: prompt }],
+      max_tokens: 500,
+      temperature: 0.4,
+    });
+
+    const content = response.choices[0].message.content.trim();
+
+    const cleanContent = content.replace(/```json|```/g, "").trim();
     const reportData = JSON.parse(cleanContent);
+
     return {
       overallScore: avgScore,
       ...reportData,
     };
-  } catch (parseError) {
-    console.error('Failed to parse final report response:', content);
+  } catch (error) {
+    console.error("OpenAI Error (generateFinalReport):", error.message);
+
     return {
       overallScore: avgScore,
       technicalScore: avgScore,
       grammarScore: avgScore,
       confidenceScore: avgScore,
-      strengths: ['Completed the interview'],
-      weaknesses: ['Report generation error'],
-      suggestions: ['Review individual question feedback for detailed insights'],
+      strengths: ["Completed the interview"],
+      weaknesses: ["Report generation failed"],
+      suggestions: ["Try again"],
     };
   }
 };
-
 module.exports = {
   generateQuestion,
   generateFollowUpQuestion,
