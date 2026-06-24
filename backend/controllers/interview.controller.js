@@ -18,7 +18,7 @@ const VALID_ROLES = [
   "Node.js Developer",
 ];
 
-const TOTAL_QUESTIONS = 10;
+const TOTAL_QUESTIONS = 20;
 // Every 3rd question becomes a follow-up for a realistic feel
 const FOLLOW_UP_INTERVAL = 3;
 
