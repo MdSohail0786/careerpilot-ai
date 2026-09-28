@@ -1,7 +1,6 @@
 /**
  * OpenAI Service
  * Handles all AI-powered interview interactions
- * Using Groq API with Llama models
  */
 const OpenAI = require("openai");
 
@@ -10,14 +9,11 @@ const openai = new OpenAI({
   baseURL: "https://api.groq.com/openai/v1",
 });
 
-// Fast model — question generation
-const FAST_MODEL = "llama3-8b-8192";
-
-// Better model — evaluation & reports (more accurate)
-const SMART_MODEL = "llama3-70b-8192";
-
 /**
  * Generate an interview question for a given role
+ * @param {string} role - The job role (e.g., "React Developer")
+ * @param {Array} previousQuestions - Array of already-asked questions to avoid repeats
+ * @returns {string} A single interview question
  */
 const generateQuestion = async (role, previousQuestions = []) => {
   const previousQuestionsText =
@@ -30,153 +26,126 @@ const generateQuestion = async (role, previousQuestions = []) => {
 
   const prompt = `Act as a senior technical interviewer conducting a real interview for a ${role} position. 
 Generate ONE clear, specific interview question that tests practical knowledge and problem-solving ability.
-Return ONLY the question text, nothing else.${previousQuestionsText}`;
+Return ONLY the question text.${previousQuestionsText}`;
 
   try {
     const response = await openai.chat.completions.create({
-      model: FAST_MODEL,
+      model: "llama3-8b-8192",
       messages: [{ role: "user", content: prompt }],
       max_tokens: 150,
       temperature: 0.8,
     });
 
-    const question = response.choices[0].message.content.trim();
-
-    // Safety check — agar empty ya bahut short aaye
-    if (!question || question.length < 10) {
-      return `What are the key concepts of ${role} that you use daily?`;
-    }
-
-    return question;
+    return response.choices[0].message.content.trim();
   } catch (error) {
     console.error("generateQuestion error:", error.message);
-    return `Explain a core concept of ${role} with a practical example.`;
+    return "Unable to generate question right now.";
   }
 };
 
 /**
- * Generate a contextual follow-up question
+ * Generate a contextual follow-up question based on the previous answer
+ * @param {string} role - The job role
+ * @param {string} previousQuestion - The question that was just answered
+ * @param {string} previousAnswer - The candidate's answer
+ * @returns {string} A follow-up question
  */
 const generateFollowUpQuestion = async (
   role,
   previousQuestion,
   previousAnswer,
 ) => {
-  const prompt = `Act as a senior technical interviewer for a ${role} position.
-
-The candidate was asked: "${previousQuestion}"
-Their answer was: "${previousAnswer}"
-
-Generate ONE short, specific follow-up question that digs deeper into their answer.
-Return ONLY the question text, nothing else.`;
+  const prompt = `Act as interviewer for ${role}.
+Question: ${previousQuestion}
+Answer: ${previousAnswer}
+Generate ONE follow-up question.`;
 
   try {
     const response = await openai.chat.completions.create({
-      model: FAST_MODEL,
+      model: "llama3-8b-8192",
       messages: [{ role: "user", content: prompt }],
       max_tokens: 150,
       temperature: 0.7,
     });
 
-    const question = response.choices[0].message.content.trim();
-
-    if (!question || question.length < 10) {
-      return `Can you elaborate more on that point?`;
-    }
-
-    return question;
+    return response.choices[0].message.content.trim();
   } catch (error) {
-    console.error("generateFollowUpQuestion error:", error.message);
-    return `Can you provide a specific example to support your answer?`;
+    console.error("OpenAI Error (followUp):", error.message);
+    return "Unable to generate follow-up question.";
   }
 };
-
 /**
- * Evaluate a candidate's answer
+ * Evaluate a candidate's answer to an interview question
+ * @param {string} role - The job role
+ * @param {string} question - The interview question
+ * @param {string} answer - The candidate's answer
+ * @returns {object} Structured evaluation with scores and feedback
  */
 const evaluateAnswer = async (role, question, answer) => {
-  // Handle empty answer
-  if (!answer || answer.trim().length < 3) {
-    return {
-      score: 0,
-      grammar_feedback: "No answer was provided.",
-      technical_feedback: "No answer was provided to evaluate.",
-      confidence_feedback: "Unable to assess without an answer.",
-      strengths: [],
-      weaknesses: ["No answer provided"],
-      suggestions: ["Please provide a detailed answer."],
-    };
-  }
-
-  const prompt = `You are an expert technical interviewer evaluating a ${role} candidate.
+  const prompt = `You are evaluating a ${role} candidate.
 
 Question: "${question}"
-Candidate Answer: "${answer}"
+Answer: "${answer}"
 
-Evaluate and return ONLY this exact JSON (no extra text, no markdown):
+Return ONLY JSON:
 {
-  "score": <number 0-100>,
-  "grammar_feedback": "<2-3 sentences about communication clarity>",
-  "technical_feedback": "<3-4 sentences about technical accuracy>",
-  "confidence_feedback": "<2-3 sentences about confidence and structure>",
-  "strengths": ["<strength 1>", "<strength 2>"],
-  "weaknesses": ["<weakness 1>", "<weakness 2>"],
-  "suggestions": ["<suggestion 1>", "<suggestion 2>", "<suggestion 3>"]
+  "score": 0-100,
+  "grammar_feedback": "",
+  "technical_feedback": "",
+  "confidence_feedback": "",
+  "strengths": [],
+  "weaknesses": [],
+  "suggestions": []
 }`;
 
   try {
     const response = await openai.chat.completions.create({
-      model: SMART_MODEL,
+      model: "llama3-8b-8192",
       messages: [{ role: "user", content: prompt }],
       max_tokens: 600,
       temperature: 0.3,
     });
 
     const content = response.choices[0].message.content.trim();
+    //const content = response.choices[0].message.content.trim();
+
     const cleanContent = content.replace(/```json|```/g, "").trim();
 
     try {
-      const parsed = JSON.parse(cleanContent);
-
-      // Validate required fields exist
-      return {
-        score: parsed.score || 50,
-        grammar_feedback: parsed.grammar_feedback || "Could not evaluate.",
-        technical_feedback: parsed.technical_feedback || "Could not evaluate.",
-        confidence_feedback:
-          parsed.confidence_feedback || "Could not evaluate.",
-        strengths: parsed.strengths || [],
-        weaknesses: parsed.weaknesses || [],
-        suggestions: parsed.suggestions || [],
-      };
+      return JSON.parse(cleanContent);
     } catch (parseError) {
-      console.error("JSON Parse Error in evaluateAnswer:", parseError.message);
+      console.error("JSON Parse Error:", cleanContent);
+
       return {
         score: 50,
-        grammar_feedback: "Evaluation parsing error. Please try again.",
-        technical_feedback: "Evaluation parsing error. Please try again.",
-        confidence_feedback: "Evaluation parsing error. Please try again.",
-        strengths: ["Answer was provided"],
-        weaknesses: ["Could not fully evaluate"],
-        suggestions: ["Try submitting your answer again"],
+        grammar_feedback: "Parsing error",
+        technical_feedback: "Parsing error",
+        confidence_feedback: "Parsing error",
+        strengths: [],
+        weaknesses: ["Invalid AI response"],
+        suggestions: ["Try again"],
       };
     }
   } catch (error) {
     console.error("evaluateAnswer error:", error.message);
+
     return {
       score: 50,
-      grammar_feedback: "Evaluation service error.",
-      technical_feedback: "Evaluation service error.",
-      confidence_feedback: "Evaluation service error.",
+      grammar_feedback: "Evaluation failed",
+      technical_feedback: "Evaluation failed",
+      confidence_feedback: "Evaluation failed",
       strengths: [],
-      weaknesses: ["AI evaluation failed"],
-      suggestions: ["Please try again"],
+      weaknesses: ["AI error"],
+      suggestions: ["Try again"],
     };
   }
 };
 
 /**
- * Generate comprehensive end-of-interview report
+ * Generate a comprehensive end-of-interview report
+ * @param {string} role - The job role
+ * @param {Array} questionAnswers - Array of {question, answer, evaluation} objects
+ * @returns {object} Comprehensive report with aggregate scores and feedback
  */
 const generateFinalReport = async (role, questionAnswers) => {
   const validEvaluations = questionAnswers.filter(
@@ -207,62 +176,43 @@ const generateFinalReport = async (role, questionAnswers) => {
     weaknesses: qa.evaluation.weaknesses,
   }));
 
-  const prompt = `You are summarizing a complete mock interview for a ${role} position.
+  const prompt = `You are a senior technical interviewer summarizing a complete mock interview for a ${role} position.
 
-Interview data:
+Interview Summary:
 ${JSON.stringify(summaryData, null, 2)}
 
 Overall average score: ${avgScore}/100
 
-Return ONLY this exact JSON (no markdown, no extra text):
+Return ONLY valid JSON:
 {
   "technicalScore": <0-100>,
   "grammarScore": <0-100>,
   "confidenceScore": <0-100>,
-  "strengths": ["<top strength 1>", "<top strength 2>", "<top strength 3>"],
-  "weaknesses": ["<weakness 1>", "<weakness 2>"],
-  "suggestions": ["<suggestion 1>", "<suggestion 2>", "<suggestion 3>"]
+  "strengths": ["..."],
+  "weaknesses": ["..."],
+  "suggestions": ["..."]
 }`;
 
   try {
     const response = await openai.chat.completions.create({
-      model: SMART_MODEL,
+      model: "llama3-8b-8192",
       messages: [{ role: "user", content: prompt }],
       max_tokens: 500,
       temperature: 0.4,
     });
 
     const content = response.choices[0].message.content.trim();
-    const cleanContent = content.replace(/```json|```/g, "").trim();
 
-    try {
-      const reportData = JSON.parse(cleanContent);
-      return {
-        overallScore: avgScore,
-        technicalScore: reportData.technicalScore || avgScore,
-        grammarScore: reportData.grammarScore || avgScore,
-        confidenceScore: reportData.confidenceScore || avgScore,
-        strengths: reportData.strengths || [],
-        weaknesses: reportData.weaknesses || [],
-        suggestions: reportData.suggestions || [],
-      };
-    } catch (parseError) {
-      console.error(
-        "JSON Parse Error in generateFinalReport:",
-        parseError.message,
-      );
-      return {
-        overallScore: avgScore,
-        technicalScore: avgScore,
-        grammarScore: avgScore,
-        confidenceScore: avgScore,
-        strengths: ["Completed the interview"],
-        weaknesses: ["Report generation had parsing issues"],
-        suggestions: ["Review individual question feedback for details"],
-      };
-    }
+    const cleanContent = content.replace(/```json|```/g, "").trim();
+    const reportData = JSON.parse(cleanContent);
+
+    return {
+      overallScore: avgScore,
+      ...reportData,
+    };
   } catch (error) {
-    console.error("generateFinalReport error:", error.message);
+    console.error("OpenAI Error (generateFinalReport):", error.message);
+
     return {
       overallScore: avgScore,
       technicalScore: avgScore,
@@ -274,7 +224,6 @@ Return ONLY this exact JSON (no markdown, no extra text):
     };
   }
 };
-
 module.exports = {
   generateQuestion,
   generateFollowUpQuestion,
