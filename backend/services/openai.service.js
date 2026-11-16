@@ -28,7 +28,7 @@ const getClient = () => {
 };
 
 /** Call the model, retry once on failure, return trimmed text */
-const chat = async (model, prompt, maxTokens, temperature) => {
+const chat = async (model, prompt, maxTokens, temperature, json = false) => {
   let lastError;
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
@@ -37,6 +37,7 @@ const chat = async (model, prompt, maxTokens, temperature) => {
         messages: [{ role: "user", content: prompt }],
         max_tokens: maxTokens,
         temperature,
+        ...(json ? { response_format: { type: "json_object" } } : {}),
       });
       const text = response.choices?.[0]?.message?.content?.trim();
       if (text) return text;
@@ -44,8 +45,7 @@ const chat = async (model, prompt, maxTokens, temperature) => {
     } catch (error) {
       lastError = error;
       console.error(
-        `AI call failed (model ${model}, attempt ${attempt}):`,
-        error.message,
+        `AI call failed (model ${model}, attempt ${attempt}): status=${error.status || "n/a"} message=${error.message}`,
       );
     }
   }
@@ -57,8 +57,21 @@ const parseJSON = (text) => {
   const cleaned = text.replace(/```json|```/gi, "").trim();
   const start = cleaned.indexOf("{");
   const end = cleaned.lastIndexOf("}");
-  if (start === -1 || end === -1) throw new Error("No JSON found in AI reply");
-  return JSON.parse(cleaned.slice(start, end + 1));
+  if (start === -1 || end === -1) {
+    console.error("AI reply had no JSON:", text.slice(0, 300));
+    throw new Error("No JSON found in AI reply");
+  }
+  try {
+    return JSON.parse(cleaned.slice(start, end + 1));
+  } catch (e) {
+    console.error(
+      "AI JSON parse failed:",
+      e.message,
+      "| reply:",
+      text.slice(0, 300),
+    );
+    throw e;
+  }
 };
 
 // Used only if the AI is unreachable, so the interview never breaks
@@ -146,7 +159,7 @@ Return ONLY JSON in exactly this shape:
 }`;
 
   try {
-    const content = await chat(SMART_MODEL, prompt, 600, 0.3);
+    const content = await chat(SMART_MODEL, prompt, 600, 0.3, true);
     return parseJSON(content);
   } catch (error) {
     console.error("evaluateAnswer error:", error.message);
@@ -212,7 +225,7 @@ Return ONLY valid JSON:
 }`;
 
   try {
-    const content = await chat(SMART_MODEL, prompt, 500, 0.4);
+    const content = await chat(SMART_MODEL, prompt, 500, 0.4, true);
     return { overallScore: avgScore, ...parseJSON(content) };
   } catch (error) {
     console.error("generateFinalReport error:", error.message);
