@@ -1,19 +1,87 @@
 /**
- * OpenAI Service
- * Handles all AI-powered interview interactions
+ * AI Service (Groq)
+ * Handles all AI-powered interview interactions.
+ * Env vars: GROQ_API_KEY (required)
+ *           GROQ_MODEL_FAST / GROQ_MODEL_SMART (optional overrides)
  */
 const OpenAI = require("openai");
 
-const openai = new OpenAI({
-  apiKey: process.env.GROQ_API_KEY,
-  baseURL: "https://api.groq.com/openai/v1",
-});
+// Current Groq models (llama3-8b-8192 / llama3-70b-8192 were retired)
+const FAST_MODEL = process.env.GROQ_MODEL_FAST || "llama-3.1-8b-instant";
+const SMART_MODEL = process.env.GROQ_MODEL_SMART || "llama-3.3-70b-versatile";
+
+// Create the client lazily so a missing key gives a clear error, not a crash at startup
+let client = null;
+const getClient = () => {
+  if (!process.env.GROQ_API_KEY) {
+    throw new Error(
+      "GROQ_API_KEY is missing. Add it in your environment variables.",
+    );
+  }
+  if (!client) {
+    client = new OpenAI({
+      apiKey: process.env.GROQ_API_KEY,
+      baseURL: "https://api.groq.com/openai/v1",
+    });
+  }
+  return client;
+};
+
+/** Call the model, retry once on failure, return trimmed text */
+const chat = async (model, prompt, maxTokens, temperature) => {
+  let lastError;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const response = await getClient().chat.completions.create({
+        model,
+        messages: [{ role: "user", content: prompt }],
+        max_tokens: maxTokens,
+        temperature,
+      });
+      const text = response.choices?.[0]?.message?.content?.trim();
+      if (text) return text;
+      throw new Error("Empty response from AI");
+    } catch (error) {
+      lastError = error;
+      console.error(
+        `AI call failed (model ${model}, attempt ${attempt}):`,
+        error.message,
+      );
+    }
+  }
+  throw lastError;
+};
+
+/** Pull the first JSON object out of a model reply */
+const parseJSON = (text) => {
+  const cleaned = text.replace(/```json|```/gi, "").trim();
+  const start = cleaned.indexOf("{");
+  const end = cleaned.lastIndexOf("}");
+  if (start === -1 || end === -1) throw new Error("No JSON found in AI reply");
+  return JSON.parse(cleaned.slice(start, end + 1));
+};
+
+// Used only if the AI is unreachable, so the interview never breaks
+const FALLBACK_QUESTIONS = [
+  "Explain the difference between var, let and const in JavaScript.",
+  "What is the Virtual DOM in React and why does it improve performance?",
+  "How does the event loop work in Node.js?",
+  "Explain how REST APIs work and the common HTTP methods.",
+  "What is the difference between SQL and NoSQL databases?",
+  "How do you handle authentication in a web application?",
+  "What are closures in JavaScript? Give an example.",
+  "Explain middleware in Express.js.",
+];
+const fallbackQuestion = (previousQuestions = []) => {
+  const unused = FALLBACK_QUESTIONS.filter(
+    (q) => !previousQuestions.includes(q),
+  );
+  const pool = unused.length ? unused : FALLBACK_QUESTIONS;
+  return pool[Math.floor(Math.random() * pool.length)];
+};
 
 /**
  * Generate an interview question for a given role
- * @param {string} role - The job role (e.g., "React Developer")
- * @param {Array} previousQuestions - Array of already-asked questions to avoid repeats
- * @returns {string} A single interview question
  */
 const generateQuestion = async (role, previousQuestions = []) => {
   const previousQuestionsText =
@@ -24,62 +92,41 @@ const generateQuestion = async (role, previousQuestions = []) => {
           .join("\n")}`
       : "";
 
-  const prompt = `Act as a senior technical interviewer conducting a real interview for a ${role} position. 
+  const prompt = `Act as a senior technical interviewer conducting a real interview for a ${role} position.
 Generate ONE clear, specific interview question that tests practical knowledge and problem-solving ability.
 Return ONLY the question text.${previousQuestionsText}`;
 
   try {
-    const response = await openai.chat.completions.create({
-      model: "llama3-8b-8192",
-      messages: [{ role: "user", content: prompt }],
-      max_tokens: 150,
-      temperature: 0.8,
-    });
-
-    return response.choices[0].message.content.trim();
+    return await chat(FAST_MODEL, prompt, 150, 0.8);
   } catch (error) {
     console.error("generateQuestion error:", error.message);
-    return "Unable to generate question right now.";
+    return fallbackQuestion(previousQuestions);
   }
 };
 
 /**
  * Generate a contextual follow-up question based on the previous answer
- * @param {string} role - The job role
- * @param {string} previousQuestion - The question that was just answered
- * @param {string} previousAnswer - The candidate's answer
- * @returns {string} A follow-up question
  */
 const generateFollowUpQuestion = async (
   role,
   previousQuestion,
   previousAnswer,
 ) => {
-  const prompt = `Act as interviewer for ${role}.
+  const prompt = `Act as an interviewer for a ${role} position.
 Question: ${previousQuestion}
 Answer: ${previousAnswer}
-Generate ONE follow-up question.`;
+Generate ONE follow-up question. Return ONLY the question text.`;
 
   try {
-    const response = await openai.chat.completions.create({
-      model: "llama3-8b-8192",
-      messages: [{ role: "user", content: prompt }],
-      max_tokens: 150,
-      temperature: 0.7,
-    });
-
-    return response.choices[0].message.content.trim();
+    return await chat(FAST_MODEL, prompt, 150, 0.7);
   } catch (error) {
-    console.error("OpenAI Error (followUp):", error.message);
-    return "Unable to generate follow-up question.";
+    console.error("generateFollowUpQuestion error:", error.message);
+    return fallbackQuestion([previousQuestion]);
   }
 };
+
 /**
- * Evaluate a candidate's answer to an interview question
- * @param {string} role - The job role
- * @param {string} question - The interview question
- * @param {string} answer - The candidate's answer
- * @returns {object} Structured evaluation with scores and feedback
+ * Evaluate a candidate's answer
  */
 const evaluateAnswer = async (role, question, answer) => {
   const prompt = `You are evaluating a ${role} candidate.
@@ -87,9 +134,9 @@ const evaluateAnswer = async (role, question, answer) => {
 Question: "${question}"
 Answer: "${answer}"
 
-Return ONLY JSON:
+Return ONLY JSON in exactly this shape:
 {
-  "score": 0-100,
+  "score": <number 0-100>,
   "grammar_feedback": "",
   "technical_feedback": "",
   "confidence_feedback": "",
@@ -99,36 +146,10 @@ Return ONLY JSON:
 }`;
 
   try {
-    const response = await openai.chat.completions.create({
-      model: "llama3-8b-8192",
-      messages: [{ role: "user", content: prompt }],
-      max_tokens: 600,
-      temperature: 0.3,
-    });
-
-    const content = response.choices[0].message.content.trim();
-    //const content = response.choices[0].message.content.trim();
-
-    const cleanContent = content.replace(/```json|```/g, "").trim();
-
-    try {
-      return JSON.parse(cleanContent);
-    } catch (parseError) {
-      console.error("JSON Parse Error:", cleanContent);
-
-      return {
-        score: 50,
-        grammar_feedback: "Parsing error",
-        technical_feedback: "Parsing error",
-        confidence_feedback: "Parsing error",
-        strengths: [],
-        weaknesses: ["Invalid AI response"],
-        suggestions: ["Try again"],
-      };
-    }
+    const content = await chat(SMART_MODEL, prompt, 600, 0.3);
+    return parseJSON(content);
   } catch (error) {
     console.error("evaluateAnswer error:", error.message);
-
     return {
       score: 50,
       grammar_feedback: "Evaluation failed",
@@ -143,9 +164,6 @@ Return ONLY JSON:
 
 /**
  * Generate a comprehensive end-of-interview report
- * @param {string} role - The job role
- * @param {Array} questionAnswers - Array of {question, answer, evaluation} objects
- * @returns {object} Comprehensive report with aggregate scores and feedback
  */
 const generateFinalReport = async (role, questionAnswers) => {
   const validEvaluations = questionAnswers.filter(
@@ -194,25 +212,10 @@ Return ONLY valid JSON:
 }`;
 
   try {
-    const response = await openai.chat.completions.create({
-      model: "llama3-8b-8192",
-      messages: [{ role: "user", content: prompt }],
-      max_tokens: 500,
-      temperature: 0.4,
-    });
-
-    const content = response.choices[0].message.content.trim();
-
-    const cleanContent = content.replace(/```json|```/g, "").trim();
-    const reportData = JSON.parse(cleanContent);
-
-    return {
-      overallScore: avgScore,
-      ...reportData,
-    };
+    const content = await chat(SMART_MODEL, prompt, 500, 0.4);
+    return { overallScore: avgScore, ...parseJSON(content) };
   } catch (error) {
-    console.error("OpenAI Error (generateFinalReport):", error.message);
-
+    console.error("generateFinalReport error:", error.message);
     return {
       overallScore: avgScore,
       technicalScore: avgScore,
@@ -224,6 +227,7 @@ Return ONLY valid JSON:
     };
   }
 };
+
 module.exports = {
   generateQuestion,
   generateFollowUpQuestion,
