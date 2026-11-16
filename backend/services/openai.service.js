@@ -6,9 +6,9 @@
  */
 const OpenAI = require("openai");
 
-// Current Groq models (llama3-8b-8192 / llama3-70b-8192 were retired)
-const FAST_MODEL = process.env.GROQ_MODEL_FAST || "llama-3.1-8b-instant";
-const SMART_MODEL = process.env.GROQ_MODEL_SMART || "llama-3.3-70b-versatile";
+// Models available on this Groq account (check with GET /openai/v1/models)
+const FAST_MODEL = process.env.GROQ_MODEL_FAST || "openai/gpt-oss-20b";
+const SMART_MODEL = process.env.GROQ_MODEL_SMART || "openai/gpt-oss-120b";
 
 // Create the client lazily so a missing key gives a clear error, not a crash at startup
 let client = null;
@@ -30,14 +30,24 @@ const getClient = () => {
 /** Call the model, retry once on failure, return trimmed text */
 const chat = async (model, prompt, maxTokens, temperature, json = false) => {
   let lastError;
+  const isReasoning = model.includes("gpt-oss");
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
+      // Attempt 1 uses JSON mode / low reasoning; attempt 2 is a plain call
+      const extras =
+        attempt === 1
+          ? {
+              ...(json ? { response_format: { type: "json_object" } } : {}),
+              ...(isReasoning ? { reasoning_effort: "low" } : {}),
+            }
+          : {};
       const response = await getClient().chat.completions.create({
         model,
         messages: [{ role: "user", content: prompt }],
-        max_tokens: maxTokens,
+        // reasoning models spend tokens on thinking, so give extra room
+        max_tokens: isReasoning ? maxTokens * 4 : maxTokens,
         temperature,
-        ...(json ? { response_format: { type: "json_object" } } : {}),
+        ...extras,
       });
       const text = response.choices?.[0]?.message?.content?.trim();
       if (text) return text;
